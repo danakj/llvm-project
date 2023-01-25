@@ -181,22 +181,52 @@ static SourceLocation getDeclLocForCommentSearch(const Decl *D,
 
   const SourceLocation DeclLoc = D->getLocation();
   if (DeclLoc.isMacroID()) {
-    if (isa<TypedefDecl>(D)) {
-      // If location of the typedef name is in a macro, it is because being
-      // declared via a macro. Try using declaration's starting location as
-      // the "declaration location".
-      return D->getBeginLoc();
-    }
-
-    if (const auto *TD = dyn_cast<TagDecl>(D)) {
-      // If location of the tag decl is inside a macro, but the spelling of
-      // the tag name comes from a macro argument, it looks like a special
-      // macro like NS_ENUM is being used to define the tag decl.  In that
-      // case, adjust the source location to the expansion loc so that we can
-      // attach the comment to the tag decl.
-      if (SourceMgr.isMacroArgExpansion(DeclLoc) && TD->isCompleteDefinition())
-        return SourceMgr.getExpansionLoc(DeclLoc);
-    }
+    // There are (at least) two types of macros we care about here.
+    //
+    // 1. Macros that are used to define a type, with a comment attached at
+    //    the macro call site.
+    //    ```
+    //    // Comment is here, where we use the macro.
+    //    typedef NS_ENUM(NSInteger, Size) {
+    //        SizeWidth,
+    //        SizeHeight
+    //    };
+    //    ```
+    // 2. Macros that define whole things along with the comment.
+    //    ```
+    //    #define MAKE_METHOD(name) \
+    //      /** Comment is here, inside the macro. */ \
+    //      void name() {}
+    //
+    //    struct S {
+    //      MAKE_METHOD(f)
+    //    }
+    //    ```
+    //
+    // Decl::getLocation() returns the place where the macro is being called,
+    // but have found a Decl inside a macro, so we want to map this location
+    // back into the macro to where the comment was written (if any) along
+    // with the decl.
+    //
+    // The location from Decl::getLocation() may have a spelling location that
+    // is inside the macro, but if the definition name comes from a macro
+    // argument, then the spelling location is the macro argument instead. In
+    // the second case, the spelling location of Decl::getLocation() is at the
+    // `f` argument in `MAKE_METHOD(f)`. This is not where we will find the
+    // attached comment, as this is not the site of the declaration.
+    //
+    // To avoid this issue, we make use of Decl::getBeginLocation() instead.
+    //
+    // In the first case, the begin location of the decl is outside the macro,
+    // at the location of `typedef`. This is where the comment is found as
+    // well. The begin location is not inside a macro, so it's spelling
+    // location is the same.
+    //
+    // In the second case, the begin location of the decl is the call to the
+    // macro, at `MAKE_METHOD`. However its spelling location is inside the
+    // the macro at the location of `void`. This is where the comment is found
+    // again.
+    return SourceMgr.getSpellingLoc(D->getBeginLoc());
   }
 
   return DeclLoc;
